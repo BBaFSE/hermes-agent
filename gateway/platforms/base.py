@@ -6198,11 +6198,46 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    def _should_suppress_text_on_voice(
+        self,
+        *,
+        tts_path: Optional[str],
+        media_files,
+        images,
+        local_files,
+    ) -> bool:
+        """Return whether the redundant text reply should be dropped for a voice
+        delivery on this platform.
+
+        Enabled per platform by ``suppress_text_when_voice``. When on, a voice
+        reply (auto-TTS speak or a MEDIA voice clip) that carries no other
+        non-voice content (images/documents) suppresses the written text — on
+        platforms whose voice notes arrive as caption-less attachments (e.g.
+        Signal) this avoids delivering audio plus the same text twice.
+        """
+        if not getattr(self.config, "suppress_text_when_voice", False):
+            return False
+        _voice_delivered = bool(tts_path) or any(
+            is_voice for _, is_voice in (media_files or [])
+        )
+        _has_non_voice_media = (
+            bool(images)
+            or any(not is_voice for _, is_voice in (media_files or []))
+            or bool(local_files)
+        )
+        return _voice_delivered and not _has_non_voice_media
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        # Whether the redundant text reply was suppressed in favor of a voice
+        # delivery on this platform (see ``_should_suppress_text_on_voice``).
+        # Initialized here so the success path below can read it even when the
+        # ``if response:`` block (which recomputes it) is skipped for an empty
+        # or falsy response.
+        _suppress_text = False
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -6471,6 +6506,17 @@ class BasePlatformAdapter(ABC):
                 # final response; that response is a new message, so resolve
                 # the current transport before sending it.
                 if text_content and not _tts_caption_delivered:
+                    # Optional per-platform text suppression for voice replies:
+                    # see ``_should_suppress_text_on_voice``.
+                    _suppress_text = self._should_suppress_text_on_voice(
+                        tts_path=_tts_path,
+                        media_files=media_files,
+                        images=images,
+                        local_files=local_files,
+                    )
+                else:
+                    _suppress_text = False
+                if text_content and not _tts_caption_delivered and not _suppress_text:
                     delivery_adapter = self._final_delivery_adapter(event.source)
                     logger.info(
                         "[%s] Sending response (%d chars) to %s",
@@ -6716,6 +6762,15 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            # When text was intentionally suppressed because a voice reply was
+            # delivered (TTS speak / MEDIA voice tag) under
+            # ``suppress_text_when_voice``, delivery was NOT a failure — the
+            # voice WAS the delivery. ``_suppress_text`` implies voice went
+            # through, so mark the turn successful (✅ not ❌).
+            if _suppress_text:
+                delivery_attempted = True
+                delivery_succeeded = True
+                processing_ok = True
             # Clean up the per-turn streaming-TTS flag (#60671).
             self._streaming_tts_completed_turns.discard(
                 self._streaming_tts_turn_key(
