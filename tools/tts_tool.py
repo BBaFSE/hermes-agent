@@ -632,6 +632,12 @@ def _load_tts_config() -> Dict[str, Any]:
 
     Returns a dict with provider settings. Falls back to defaults
     for any missing fields.
+
+    Recognized top-level ``tts:`` keys include: ``provider``, ``voice``,
+    ``model``, ``speed``, ``output_format``, and ``output_path`` — an optional
+    directory override where generated audio files are written (defaults to
+    ``~/.hermes/audio_cache``). ``output_path`` is honored by both the single
+    and tool TTS entry points.
     """
     try:
         from hermes_cli.config import load_config
@@ -3231,7 +3237,7 @@ def _text_to_speech_single(
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        out_dir = Path(tts_config.get("output_path") or DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
@@ -3589,7 +3595,7 @@ def text_to_speech_tool(
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        out_dir = Path(tts_config.get("output_path") or DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
